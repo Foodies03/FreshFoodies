@@ -242,7 +242,7 @@ Send a PUT request to add or remove user(s) from a fridge
     "entry_details": {
       "food_name": "",
       "category": "",
-      "entry_type: "",
+      "entry_type": "",
       "amount": "",
       "cost_per_unit": "",
       "creation_time": ""
@@ -256,7 +256,7 @@ Send a PUT request to add or remove user(s) from a fridge
   "new_entry": {
     "food_name": "",
     "category": "",
-    "entry_type: "",
+    "entry_type": "",
     "amount": "",
     "cost_per_unit": "",
     "creation_time": ""
