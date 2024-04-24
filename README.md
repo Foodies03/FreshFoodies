@@ -239,7 +239,7 @@ Send a PUT request to add or remove user(s) from a fridge
 ```json
 {
     "email": "",
-    "entry_details: {
+    "entry_details": {
       "food_name": "",
       "category": "",
       "entry_type: "",
@@ -253,7 +253,7 @@ Send a PUT request to add or remove user(s) from a fridge
 **Response Body**
 ```json
 {
-  new_entry: {
+  "new_entry": {
     "food_name": "",
     "category": "",
     "entry_type: "",
