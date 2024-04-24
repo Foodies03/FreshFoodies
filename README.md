@@ -226,7 +226,7 @@ Send a PUT request to add or remove user(s) from a fridge
 **Response Body**
 ```json
 {
-  entries: [{}, {}, {}, ...]
+  "entries": [{}, {}, {}, ...]
 }
 ```
 
