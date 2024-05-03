@@ -10,17 +10,35 @@ from typing import List, Optional, Union
 from datetime import datetime
 
 from core.objectid import PydanticObjectId
+from uuid import UUID, uuid4
 
 
 class Food(BaseModel):
-    id: Optional[PydanticObjectId] = Field(None, alias="_id")
+    id: UUID = Field(default_factory=uuid4)
     name: str
     slug: str
     expiration_date: Optional[str]
-    price: Optional[float]
+    cost_per_unit: Optional[float]
     category: str
     quantity: int
     location: Optional[str]
+
+    def to_json(self):
+        return jsonable_encoder(self, exclude_none=True)
+
+    def to_bson(self):
+        data = self.dict(by_alias=True, exclude_none=True)
+        if data.get("_id") is None:
+            data.pop("_id", None)
+        return data
+
+class Entry(BaseModel):
+    food_name: str
+    category: str
+    entry_type: Optional[str]
+    amount: int
+    cost_per_unit: float
+    creation_time: Optional[str]
 
     def to_json(self):
         return jsonable_encoder(self, exclude_none=True)
