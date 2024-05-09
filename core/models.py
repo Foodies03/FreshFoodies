@@ -8,7 +8,7 @@ from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field
 from typing import List, Optional, Union
 from datetime import datetime
-from .food import Food
+from .food import Food, Entry
 
 from .objectid import PydanticObjectId
 
@@ -17,6 +17,7 @@ class User(BaseModel):
     name: str
     email: str
     fridge_ids: Optional[List[PydanticObjectId]]
+    entries: Optional[List[Entry]]
 
     def to_json(self):
         return jsonable_encoder(self, exclude_none=True)

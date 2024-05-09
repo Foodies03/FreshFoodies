@@ -1,6 +1,6 @@
 # from flask import Flask, session, redirect
 from config import Configuration
-from datetime import datetime
+from datetime import datetime, timezone
 import os
 import json
 from pymongo.collection import Collection, ReturnDocument
@@ -8,6 +8,9 @@ from pymongo.collection import Collection, ReturnDocument
 import flask
 from flask import Flask, request, jsonify, render_template, redirect
 from flask_pymongo import PyMongo
+from uuid import UUID, uuid4
+
+from pymongo import MongoClient
 
 # from bson import ObjectId
 
@@ -23,11 +26,9 @@ app = Flask(__name__)
 app.config.from_object(Configuration)
 app.secret_key = os.urandom(24)  # Secret key for client authentication
 app.url_map.strict_slashes = False
-pymongo = PyMongo(app, tlsCAFile=certifi.where())
 
-# CHATGPT
-# # Import your models here
-# from .models import Recipe, UserIngredients
+mongo_client = MongoClient(app.config['MONGO_URI'], uuidRepresentation='standard')
+pymongo = PyMongo(app, tlsCAFile=certifi.where())
 
 # blueprint for non-authentication parts of the app
 from .food import food as food_blueprint
@@ -36,7 +37,7 @@ app.register_blueprint(food_blueprint)
 from .receipt import receipt as receipt_blueprint
 app.register_blueprint(receipt_blueprint)
 
-from .models import Fridge, Food, User
+from .models import Fridge, Food, User, Entry
 
 """
 Test Account and Fridge
@@ -100,10 +101,10 @@ def signup():
             message = 'This email already exists in database'
             return render_template('index.html', message=message)
         else:
-            user_input = {'name': user, 'email': email, 'fridge_ids': []}
+            user_input = {'name': user, 'email': email, 'fridge_ids': [], 'entries': []}
             user: User = User(**user_input)
             users.insert_one(user.to_bson())
-            
+
             user_data: User = get_user_mongodb(email)
             return user_data.to_json()
     return render_template('index.html')
@@ -138,6 +139,77 @@ def me():
         return user.to_json()
     else:
         flask.abort(404, "User not found")
+
+@app.route('/api/user/entries', methods=['POST'])
+def get_entry_data():
+    request_json = request.get_json()
+    email = request_json['email']
+    user: User = get_user_mongodb(email)
+    if user:
+        time_frame = request_json['time_frame']
+        end_time = datetime.now(timezone.utc).replace(tzinfo=None)
+        begin_time = datetime.fromisoformat(time_frame.rstrip("Z"))
+        print(end_time)
+        print(begin_time)
+        raw_entries = users.find_one(
+            {'email' : email}
+        )['entries']
+        if raw_entries:
+            filtered_entries = [entry for entry in raw_entries if begin_time <= datetime.fromisoformat(entry['creation_time'].rstrip("Z")) <= end_time]
+        else:
+            print('could not find user')
+        print(filtered_entries)
+        return filtered_entries
+    else:
+        flask.abort(404, "User not found")
+
+@app.route('/api/user/add_entry', methods=['POST'])
+def add_entry():
+    request_json = request.get_json()
+    email = request_json['email']
+    user: User = get_user_mongodb(email)
+
+    if user:
+        entry_details = request_json['entry_details']
+        print('entry details:')
+        print(entry_details['id'])
+        new_entry_raw = {
+            'food_name': entry_details["food_name"],
+            'category': entry_details["category"],
+            'entry_type': entry_details["entry_type"],
+            'amount': entry_details['amount'],
+            'cost_per_unit': entry_details['cost_per_unit'],
+            'creation_time': entry_details['creation_time']
+        }
+        new_entry: Entry = Entry(**new_entry_raw).to_bson()
+        added_entry = users.find_one_and_update(
+            {'email': email},
+            {'$push': {'entries': new_entry}},
+            return_document=ReturnDocument.AFTER
+        )
+
+        if added_entry:
+            print("successfully added entry")
+            print(new_entry)
+            print('food_id: ')
+            id_to_remove = UUID(entry_details['id'])
+            test_result = fridges.find_one(
+                {'_id' : PydanticObjectId(entry_details['fridge_id'])},
+            )
+            print(test_result)
+            result = fridges.find_one_and_update(
+                {'_id' : PydanticObjectId(entry_details['fridge_id'])},
+                {'$pull': {'foods': {'id': id_to_remove}}},
+                return_document=ReturnDocument.AFTER
+            )
+            print('pull result')
+            print(result)
+        else:
+            print("failed to add entry")
+
+        return new_entry
+    else:
+        flask.abort(404, "user not found")
 
 # Create new empty fridge
 """
@@ -194,7 +266,7 @@ def get_fridge(id):
 
 # Add or remove user of fridge
 """
-Expects 
+Expects
 {
     "email": "",
     "name": "",
@@ -248,10 +320,12 @@ def add_to_fridge(id):
     foods_raw = request_json["foods"]
     foods = json.loads(foods_raw)   # Parse food objects
     if action == 'add':
+        for food in foods:
+            food['_id'] = uuid4()
         food_list = [Food(**food).to_bson() for food in foods]    # Convert JSON foods to food objects for mongodb
         updated_fridge = fridges.find_one_and_update(
         {"_id": PydanticObjectId(id)},
-        {"$push": {"foods": {"$each": food_list}}},
+        {"$addToSet": {"foods": {"$each": food_list}}},
         return_document=ReturnDocument.AFTER,
         )
         if updated_fridge:  # Successfully added foods
@@ -261,10 +335,11 @@ def add_to_fridge(id):
     elif action == 'remove':
         food_list = foods
         # Remove foods included in request body
-        for slug in food_list:
+        print(food_list)
+        for food in food_list:
             updated_fridge = fridges.find_one_and_update(
             {"_id": PydanticObjectId(id)},
-            { "$pull": { "foods": { "slug": slug} } },
+            { "$pull": { "foods": { "slug": food['slug'], 'expiration_date': food['expiration_date'] } } },
             return_document=ReturnDocument.AFTER,
             )
         if updated_fridge:  # Successfully removed foods
@@ -279,9 +354,9 @@ PUT EXPECTS
 Food object
 
 RETURNS
-Food object: 
+Food object:
 {
-    "name": 
+    "name":
     "category":
     "location":
     ...
@@ -297,7 +372,7 @@ def get_food(id, slug):
     elif request.method == "PUT":
         # TODO: Remove and reinsert food
         print("replacing food")
-        
+
     else:
         flask.abort(400, "Invalid request")
 
@@ -327,7 +402,7 @@ def delete_food(id):
         return Fridge(**deleted_fridge).to_json()
     else:
         flask.abort(404, "Fridge not found")
-
+        
 # Retrieve fridge object reference from given ObjectId
 def get_fridge_mongodb(id) -> Fridge:
     id_object: PydanticObjectId = PydanticObjectId(id)
