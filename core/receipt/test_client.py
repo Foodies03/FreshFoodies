@@ -12,7 +12,8 @@ def randomword(length):
     letters = string.ascii_lowercase
     return ''.join(random.choice(letters) for i in range(length))
 
-addr = 'http://127.0.0.1:5000'
+# addr = 'http://127.0.0.1:5000'
+addr = 'exp://192.168.1.34:8081'
 test_url = addr + '/api/receipt'
 
 # prepare headers for http request
