@@ -6,15 +6,18 @@ import json
 from pymongo.collection import Collection, ReturnDocument
 
 import flask
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, render_template, redirect
 from flask_pymongo import PyMongo
 from uuid import UUID, uuid4
 
 from pymongo import MongoClient
 
-from pymongo.errors import DuplicateKeyError
+# from bson import ObjectId
 
+from pymongo.errors import DuplicateKeyError
 from .objectid import PydanticObjectId
+
+import certifi
 
 # TODO: Add "expires in ... days"
 
@@ -25,7 +28,7 @@ app.secret_key = os.urandom(24)  # Secret key for client authentication
 app.url_map.strict_slashes = False
 
 mongo_client = MongoClient(app.config['MONGO_URI'], uuidRepresentation='standard')
-pymongo = PyMongo(app)
+pymongo = PyMongo(app, tlsCAFile=certifi.where())
 
 # blueprint for non-authentication parts of the app
 from .food import food as food_blueprint
@@ -39,12 +42,17 @@ from .models import Fridge, Food, User, Entry
 """
 Test Account and Fridge
 """
-USER_ID = PydanticObjectId('63e374f9f538bd23252a2fd1')
-FRIDGE_ID = PydanticObjectId('63e37436f538bd23252a2fcf')
+# USER_ID = PydanticObjectId('63e374f9f538bd23252a2fd1')
+# FRIDGE_ID = PydanticObjectId('63e37436f538bd23252a2fcf')
+
+USER_ID = PydanticObjectId('663ace18ffd58bb442157938')
+FRIDGE_ID = PydanticObjectId('663acdc9ffd58bb442157934')
 
 # Get a reference to the fridge collection
 fridges: Collection = pymongo.db.fridges
 users: Collection = pymongo.db.users
+
+recipes_collection: Collection = pymongo.db.recipes
 
 @app.errorhandler(404)
 def resource_not_found(e):
@@ -111,13 +119,15 @@ EXPECTS:
 """
 @app.route("/api/login", methods=["POST"])
 def login():
+    print("login request")
     request_json = request.get_json()
     email = request_json["email"]
     user: User = get_user_mongodb(email)
+    print(email)
     if user:
-        return json.dumps({"email": email})
+        return jsonify({"email": email}), 200
     else:
-        flask.abort(404, "User not found")
+        return jsonify({"error": "User not found"}), 404
 
 # Route for logged in user
 @app.route('/api/me', methods=["POST", "GET"])
@@ -392,8 +402,7 @@ def delete_food(id):
         return Fridge(**deleted_fridge).to_json()
     else:
         flask.abort(404, "Fridge not found")
-
-
+        
 # Retrieve fridge object reference from given ObjectId
 def get_fridge_mongodb(id) -> Fridge:
     id_object: PydanticObjectId = PydanticObjectId(id)
@@ -405,3 +414,116 @@ def get_user_mongodb(email: str) -> User:
     raw_user = users.find_one({"email": email})
     user: User = User(**raw_user)
     return user
+
+# # Route to display recommended recipes
+@app.route('/api/fridge/<string:id>/recommended_recipes', methods=['GET'])
+def get_recommended_recipes(id):
+    category = request.args.get('category')
+    recommended_recipes = recommend_recipes(id, category)
+    return recommended_recipes
+
+# Function to get user's ingredients from MongoDB
+def get_fridge_ingredients(id):
+    fridge = fridges.find_one({"_id": PydanticObjectId(id)})
+    if fridge:
+        fridge_ingredients = fridge.get('foods', [])
+        food_names = [item['name'] for item in fridge_ingredients]
+        return food_names
+    else:
+        return []
+
+# Function to recommend recipes based on user ingredients
+def recommend_recipes(id, category):
+    food_names = get_fridge_ingredients(id)
+    if food_names:
+        
+        recipes = recipes_collection.find()
+        print(category)
+        if (category != "All"):
+            if (category == "Snacks"):
+                category = "snack"
+            if (category == "Drinks"):
+                category = "drink"
+            recipes = recipes_collection.find({'category': category.lower()})
+
+        # Sorting by highest number of matching ingredients
+        # Omits zero matching ingredients
+        # sorted_recipes = sorted(
+        #     (recipe for recipe in recipes if any(ingredient['ingredient'] in food_names for ingredient in recipe['ingredients'])),
+        #     key=lambda x: sum(ingredient['ingredient'] in food_names for ingredient in x['ingredients']),
+        #     reverse=True,
+        # )
+
+        # Sorted by least number of missing ingredients to make recipe
+        # Omits zero matching ingredients
+        sorted_recipes = sorted(
+            (recipe for recipe in recipes if any(ingredient['ingredient'] in food_names for ingredient in recipe['ingredients'])),
+            key=lambda x: len(set(ingredient['ingredient'] for ingredient in x['ingredients']) - set(food_names)),
+        )
+
+        filtered_recipes = [recipe for recipe in sorted_recipes if len(set(ingredient['ingredient'] for ingredient in recipe['ingredients']) - set(food_names)) <= 4]
+
+        for recipe in filtered_recipes:
+            recipe['_id'] = str(recipe['_id'])
+        return filtered_recipes
+    else:
+        return ['No recipes with matching ingredients :(']
+
+# Route for recipe details page
+@app.route('/api/fridge/<string:id>/recipes/<string:recipe_id>', methods=['GET'])
+def recipe_details(id, recipe_id):
+    recipe = recipes_collection.find_one({'_id': PydanticObjectId(recipe_id)})
+    recipe['_id'] = str(recipe['_id'])
+    return jsonify(recipe=recipe)
+
+# Route to receive servings data and update fridge ingredients
+@app.route('/api/fridge/<string:id>/recipes/<string:recipe_id>/servings', methods=['POST'])
+def update_fridge_servings(id, recipe_id):
+    request_data = request.get_json()
+    servings = request_data.get('servings', 1)  # Default servings is 1 if not provided
+    try:
+        servings = int(servings)
+    except ValueError:
+        return jsonify(error='Servings must be a number'), 400
+
+    # Find the matching recipe in recipes_collection
+    recipe = recipes_collection.find_one({'_id': PydanticObjectId(recipe_id)})
+    if not recipe:
+        return jsonify(error='Recipe not found'), 404
+
+    # Adjust ingredient quantities in the fridge based on servings
+    fridge = fridges.find_one({"_id": PydanticObjectId(id)})
+    if not fridge:
+        return jsonify(error='Fridge not found'), 404
+
+    fridge_ingredients = fridge.get('foods', [])
+    updated_fridge_ingredients = []  # Initialize list for updated fridge ingredients
+
+    for ingredient in recipe['ingredients']:
+        ingredient_name = ingredient['ingredient']
+        ingredient_amount = ingredient['amount']
+        amount_used = ingredient_amount * servings
+        for fridge_item in fridge_ingredients:
+            if fridge_item['name'] == ingredient_name:
+                quantity = int(fridge_item['quantity'])
+                if amount_used < quantity:  # Check if recipe amount is less than fridge quantity
+                    fridge_item['quantity'] = str(quantity - amount_used)  # Update quantity if enough in fridge
+                    updated_fridge_ingredients.append(fridge_item)  # Append the updated fridge item
+                break  # Found matching ingredient, no need to check others
+
+    # Include fridge items not updated (amount_used >= quantity)
+    for fridge_item in fridge_ingredients:
+        if fridge_item not in updated_fridge_ingredients:
+            updated_fridge_ingredients.append(fridge_item)
+
+    # Update fridge with adjusted ingredient quantities
+    updated_fridge = fridges.find_one_and_update(
+        {"_id": PydanticObjectId(id)},
+        {"$set": {"foods": updated_fridge_ingredients}},
+        return_document=ReturnDocument.AFTER,
+    )
+
+    if updated_fridge:
+        return jsonify(message='Fridge ingredients updated successfully'), 200
+    else:
+        return jsonify(error='Failed to update fridge ingredients'), 500
